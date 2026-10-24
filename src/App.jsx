@@ -20,6 +20,26 @@ const addDays = (dateString, days) => {
   return date.toISOString().slice(0, 10);
 };
 
+function loadRazorpayCheckout() {
+  if (window.Razorpay) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://checkout.razorpay.com/v1/checkout.js";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Razorpay checkout could not be loaded. Check your connection and try again."));
+    document.body.appendChild(script);
+  });
+}
+
+async function functionErrorMessage(error) {
+  if (error?.context instanceof Response) {
+    const response = await error.context.json();
+    return response.error || error.message;
+  }
+  return error?.message || "The payment request failed.";
+}
+
 export default function App() {
   const [rooms, setRooms] = useState([]);
   const [loadingRooms, setLoadingRooms] = useState(true);
@@ -174,23 +194,62 @@ export default function App() {
     }
 
     setBookingBusy(true);
-    // The database function recalculates the total and atomically reserves inventory.
-    const { data, error } = await supabase.rpc("create_booking", {
-      p_room_type_id: activeRoom.id,
-      p_check_in: checkIn,
-      p_check_out: checkOut,
-      p_guests: Number(guests),
-      p_guest_name: guestName.trim(),
-      p_guest_phone: guestPhone.trim() || null
-    });
-    setBookingBusy(false);
+    try {
+      const { data: order, error } = await supabase.functions.invoke("create-razorpay-order", {
+        body: {
+          roomTypeId: activeRoom.id,
+          checkIn,
+          checkOut,
+          guests: Number(guests),
+          guestName: guestName.trim(),
+          guestPhone: guestPhone.trim() || null,
+        },
+      });
+      if (error) throw new Error(await functionErrorMessage(error));
+      if (!order?.orderId || !order?.keyId) {
+        throw new Error(order?.error || "The payment order could not be created.");
+      }
 
-    if (error) {
-      setBookingMessage(error.message);
-    } else {
-      const bookingId = typeof data === "string" ? data : data?.booking_id;
-      setBookingMessage(`Booking request created${bookingId ? ` (reference: ${bookingId})` : ""}. Payment is not enabled yet.`);
-      await loadBookings();
+      await loadRazorpayCheckout();
+      const checkout = new window.Razorpay({
+        key: order.keyId,
+        amount: order.amount,
+        currency: order.currency,
+        order_id: order.orderId,
+        name: "The Aurelia",
+        description: `${activeRoom.name} · ${nights} ${nights === 1 ? "night" : "nights"}`,
+        prefill: { name: guestName.trim(), email: session.user.email || "" },
+        notes: { booking_id: order.bookingId },
+        theme: { color: "#263c32" },
+        handler: async (payment) => {
+          setBookingBusy(true);
+          try {
+            const { error: verifyError } = await supabase.functions.invoke("verify-razorpay-payment", {
+              body: { bookingId: order.bookingId, ...payment },
+            });
+            if (verifyError) throw new Error(await functionErrorMessage(verifyError));
+            setBookingMessage(`Payment successful. Your booking reference is ${order.bookingId}.`);
+            await loadBookings();
+          } catch (error) {
+            setBookingMessage(error instanceof Error ? error.message : "Payment was received but could not be verified yet. Check My account shortly.");
+          } finally {
+            setBookingBusy(false);
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setBookingMessage("Payment was not completed. Your room is held for up to 30 minutes.");
+          },
+        },
+      });
+      checkout.on("payment.failed", (response) => {
+        setBookingMessage(response.error?.description || "Payment failed. Please try again.");
+      });
+      checkout.open();
+    } catch (error) {
+      setBookingMessage(error instanceof Error ? error.message : "Unable to start payment. Please try again.");
+    } finally {
+      setBookingBusy(false);
     }
   }
 
@@ -233,7 +292,7 @@ export default function App() {
                 <div className="booking-row" key={booking.id}>
                   <strong>{booking.room_types?.name || "Room"}</strong>
                   <span>{booking.check_in} → {booking.check_out}</span>
-                  <span>{money(booking.total_amount)} · {booking.status}</span>
+                  <span>{money(booking.total_amount)} · {booking.status === "pending_payment" ? "Awaiting payment" : booking.status.replaceAll("_", " ")}</span>
                   {booking.status === "confirmed" && booking.check_in > todayString() && (
                     <button
                       className="cancellation-button"
@@ -340,10 +399,10 @@ export default function App() {
               <label>Phone (optional)<input type="tel" value={guestPhone} onChange={(e) => setGuestPhone(e.target.value)} autoComplete="tel" maxLength="30" placeholder="+91 ..." /></label>
               <div className="estimate"><span>{activeRoom?.name || "Select a room"} · {nights} {nights === 1 ? "night" : "nights"}</span><strong>{money(estimate)}</strong><small>Estimate only. Final amount is recalculated by the database. Taxes/fees are not included in this starter.</small></div>
               <button className="button button-dark booking-submit" type="submit" disabled={bookingBusy || loadingRooms || rooms.length === 0}>
-                {bookingBusy ? "Checking availability…" : "Request booking"} <span>↗</span>
+                {bookingBusy ? "Starting secure checkout…" : "Continue to secure payment"} <span>↗</span>
               </button>
-              {!session && <p className="small-note">You'll need to sign in before a booking can be created.</p>}
-              {bookingMessage && <p className={`form-message ${bookingMessage.toLowerCase().includes("created") ? "success-message" : ""}`} role="status">{bookingMessage}</p>}
+              <p className="small-note">{session ? "Razorpay test mode. Your room is held for up to 30 minutes while payment is pending." : "You'll need to sign in before continuing to payment."}</p>
+              {bookingMessage && <p className={`form-message ${bookingMessage.startsWith("Payment successful") ? "success-message" : ""}`} role="status">{bookingMessage}</p>}
             </form>
           </div>
         </section>
