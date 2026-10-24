@@ -35,8 +35,9 @@ Open the local URL Vite prints, usually `http://localhost:5173`.
 2. Go to SQL Editor → New query.
 3. Open `supabase/schema.sql` from this project, copy all of it into SQL Editor and inspect it.
 4. Run the script. It creates `room_types`, `room_inventory`, `bookings`, RLS policies and the `create_booking` RPC, then seeds demo room types and 365 days of demo inventory.
-5. Check Table Editor to confirm the three tables and sample room types exist.
-6. In Authentication → Providers, ensure Email is enabled. For local testing, sign up with an email you can verify. Supabase may require email confirmation before a session is created.
+5. In SQL Editor, run `supabase/cancel_booking.sql` to add the cancellation RPC. This step is required for existing and new projects.
+6. Check Table Editor to confirm the three tables and sample room types exist.
+7. In Authentication → Providers, ensure Email is enabled. For local testing, sign up with an email you can verify. Supabase may require email confirmation before a session is created.
 
 The script is intended for a fresh starter project. It uses `create table if not exists` and replaces the `create_booking` function, but you should not run it blindly on a production database or database with important data. Back up and review any existing schema first.
 
@@ -47,6 +48,8 @@ The script is intended for a fresh starter project. It uses `create table if not
 - The database checks the authenticated user, dates, room type, guest limit and inventory.
 - It calculates the total from the database's room rate, not the browser's estimate.
 - It atomically decrements inventory for every night and inserts the booking in one transaction. If a night has no inventory, the transaction rolls back.
+- Guests can cancel their own confirmed bookings before the check-in day from their account. The database validates ownership and timing, then marks the booking cancelled and restores its inventory atomically.
+- Payments and refunds are not integrated; cancelling a booking does not issue a refund.
 - RLS restricts customers to viewing their own bookings. Inventory is not readable by anonymous browser clients.
 
 The sample sets booking status to `confirmed` because payment is not integrated yet. Before public launch, consider changing this to a hold/pending workflow with expiry and a secure payment webhook that confirms after payment. Never accept card details directly in this form.
@@ -68,11 +71,13 @@ The sample sets booking status to `confirmed` because payment is not integrated 
 - [ ] A new user can sign up and sign in.
 - [ ] A signed-out user cannot create a booking.
 - [ ] A signed-in user can book an available room/date.
+- [ ] A guest can cancel their own upcoming booking before check-in, and the room inventory is restored.
+- [ ] A guest cannot cancel another user's booking, a previously cancelled booking, or a booking on/after its check-in day.
 - [ ] Two users competing for the final room cannot both take it.
 - [ ] A sold-out night returns an availability error and does not partially reserve earlier nights.
 - [ ] A user can only view their own bookings.
 - [ ] Invalid dates and guest counts are rejected by the database.
-- [ ] Confirmed booking emails, cancellation and refund behavior are not assumed to exist; add these deliberately.
+- [ ] Confirmed booking emails and refund behavior are not assumed to exist; add these deliberately.
 
 ## 6. Build and deploy
 

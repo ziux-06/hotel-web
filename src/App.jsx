@@ -38,6 +38,7 @@ export default function App() {
   const [bookingMessage, setBookingMessage] = useState("");
   const [bookingBusy, setBookingBusy] = useState(false);
   const [myBookings, setMyBookings] = useState([]);
+  const [cancellationBusyId, setCancellationBusyId] = useState("");
   const [showAccount, setShowAccount] = useState(false);
 
   const nights = useMemo(() => {
@@ -115,6 +116,35 @@ export default function App() {
       .order("created_at", { ascending: false });
     if (error) setAuthMessage(error.message);
     else setMyBookings(data || []);
+  }
+
+  async function cancelBooking(booking) {
+    if (!supabase || cancellationBusyId) return;
+    if (!window.confirm("Cancel this booking? This will release the room for these dates.")) return;
+
+    setCancellationBusyId(booking.id);
+    setAuthMessage("");
+    try {
+      const { error } = await supabase.rpc("cancel_booking", {
+        p_booking_id: booking.id,
+      });
+      if (error) {
+        setAuthMessage(error.message);
+        return;
+      }
+
+      setMyBookings((current) =>
+        current.map((item) =>
+          item.id === booking.id ? { ...item, status: "cancelled" } : item
+        )
+      );
+      setAuthMessage("Booking cancelled. The room is available again.");
+      await loadBookings();
+    } catch (error) {
+      setAuthMessage(error instanceof Error ? error.message : "Unable to cancel this booking.");
+    } finally {
+      setCancellationBusyId("");
+    }
   }
 
   async function handleBooking(event) {
@@ -204,8 +234,19 @@ export default function App() {
                   <strong>{booking.room_types?.name || "Room"}</strong>
                   <span>{booking.check_in} → {booking.check_out}</span>
                   <span>{money(booking.total_amount)} · {booking.status}</span>
+                  {booking.status === "confirmed" && booking.check_in > todayString() && (
+                    <button
+                      className="cancellation-button"
+                      type="button"
+                      disabled={Boolean(cancellationBusyId)}
+                      onClick={() => cancelBooking(booking)}
+                    >
+                      {cancellationBusyId === booking.id ? "Cancelling…" : "Cancel booking"}
+                    </button>
+                  )}
                 </div>
               ))}</div>}
+              {authMessage && <p className={`form-message ${authMessage.startsWith("Booking cancelled") ? "success-message" : ""}`} role="status">{authMessage}</p>}
             </div>
           ) : (
             <form onSubmit={handleAuth} className="auth-form">
